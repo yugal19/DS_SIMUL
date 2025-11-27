@@ -1,0 +1,5 @@
+{
+  "name": "DistriKV Simulator",
+  "description": "A visual simulation of a distributed key-value store with leader-follower replication, write-ahead logging (WAL), and failure recovery mechanisms.",
+  "requestFramePermissions": []
+}

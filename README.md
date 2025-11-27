@@ -1,20 +1,27 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# Distributed KV Store Simulator
 
-# Run and deploy your AI Studio app
+A lightweight, browser-based simulator demonstrating:
 
-This contains everything you need to run your app locally.
+- Leader–Follower replication
+- Write-Ahead Logging (WAL)
+- Retry queue & failure handling
+- Replica crashes & network partitions
+- Real-time logs and storage visualization
 
-View your app in AI Studio: https://ai.studio/apps/drive/13mo3h9QFkxn5ykaGEl3VMmlP5yncgnoE
+---
 
-## Run Locally
+## 🚀 Run Locally
 
-**Prerequisites:**  Node.js
+### **Prerequisites**
 
+- Node.js (v18 or above)
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+---
+
+## 📥 Installation & Setup
+
+1. **Install dependencies**
+
+```sh
+npm i
+```

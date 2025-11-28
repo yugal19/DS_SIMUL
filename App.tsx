@@ -18,7 +18,6 @@ import {
   ServerCrash,
   ShieldCheck,
   AlertOctagon,
-  Plus,
   BrainCircuit,
   Settings,
 } from "lucide-react";
@@ -44,10 +43,6 @@ export default function App() {
   const [primaryLogs, setPrimaryLogs] = useState<LogEntry[]>([]);
   const [replicaLogs, setReplicaLogs] = useState<LogEntry[]>([]);
   const [clientLogs, setClientLogs] = useState<LogEntry[]>([]);
-
-  // Inputs
-  const [inputKey, setInputKey] = useState("user:101");
-  const [inputValue, setInputValue] = useState('{"role": "admin"}');
 
   // AI Analysis
   const [aiAnalysis, setAiAnalysis] = useState<string | null>(null);
@@ -152,48 +147,87 @@ export default function App() {
     [addLog]
   );
 
-  const handlePut = async () => {
-    if (!inputKey || !inputValue) return;
+  // --- applyPut: used both by internal logic & incoming client requests ---
+  const applyPut = useCallback(
+    async (key: string, value: string) => {
+      if (!key) return;
 
-    const key = inputKey;
-    const value = inputValue;
+      addLog(
+        "CLIENT",
+        LogType.INFO,
+        `PUT /kv/${key} body={"value": "${value}"}`
+      );
 
-    addLog("CLIENT", LogType.INFO, `PUT /kv/${key} body={"value": "${value}"}`);
-
-    const newVersion = (primaryStore[key]?.version || 0) + 1;
-    const newItem: StoreItem = {
-      key,
-      value,
-      timestamp: Date.now(),
-      version: newVersion,
-    };
-
-    addLog("PRIMARY", LogType.WAL, `BEGIN TRANSACTION ${generateId()}`);
-    addLog("PRIMARY", LogType.WAL, `SET ${key}=${value} v${newVersion}`);
-    addLog("PRIMARY", LogType.WAL, `COMMIT`);
-
-    setPrimaryStore((prev) => ({ ...prev, [key]: newItem }));
-    addLog("PRIMARY", LogType.SUCCESS, `Stored locally: ${key}`);
-
-    const task: ReplicationTask = {
-      id: generateId(),
-      key,
-      value,
-      version: newVersion,
-      attempts: 0,
-      lastAttempt: 0,
-    };
-
-    const success = await attemptReplication(task);
-
-    if (!success) {
-      setRetryQueue((prev) => {
-        const filtered = prev.filter((t) => t.key !== key);
-        return [...filtered, { ...task, attempts: 1, lastAttempt: Date.now() }];
+      // compute version using functional state update to avoid stale closure
+      let newVersion = 1;
+      setPrimaryStore((prev) => {
+        newVersion = (prev[key]?.version || 0) + 1;
+        const newItem: StoreItem = {
+          key,
+          value,
+          timestamp: Date.now(),
+          version: newVersion,
+        };
+        return { ...prev, [key]: newItem };
       });
-      addLog("PRIMARY", LogType.ERROR, `Added [${key}] to Retry Queue`);
-    }
-  };
+
+      addLog("PRIMARY", LogType.WAL, `BEGIN TRANSACTION ${generateId()}`);
+      addLog("PRIMARY", LogType.WAL, `SET ${key}=${value} v${newVersion}`);
+      addLog("PRIMARY", LogType.WAL, `COMMIT`);
+      addLog("PRIMARY", LogType.SUCCESS, `Stored locally: ${key}`);
+
+      const task: ReplicationTask = {
+        id: generateId(),
+        key,
+        value,
+        version: newVersion,
+        attempts: 0,
+        lastAttempt: 0,
+      };
+
+      const success = await attemptReplication(task);
+
+      if (!success) {
+        setRetryQueue((prev) => {
+          const filtered = prev.filter((t) => t.key !== key);
+          return [
+            ...filtered,
+            { ...task, attempts: 1, lastAttempt: Date.now() },
+          ];
+        });
+        addLog("PRIMARY", LogType.ERROR, `Added [${key}] to Retry Queue`);
+      }
+    },
+    [attemptReplication, addLog]
+  );
+
+  // --- Poll the dev-server queue for incoming client PUTs ---
+  useEffect(() => {
+    let mounted = true;
+
+    const poll = async () => {
+      try {
+        const res = await fetch("/sim-requests");
+        if (!res.ok) return;
+        const items: Array<{ key: string; value: string }> = await res.json();
+        if (!mounted || !items || items.length === 0) return;
+        for (const it of items) {
+          // apply each incoming request
+          // eslint-disable-next-line no-await-in-loop
+          await applyPut(it.key, it.value);
+        }
+      } catch (e) {
+        // ignore network errors
+      }
+    };
+
+    poll();
+    const id = setInterval(poll, 1000);
+    return () => {
+      mounted = false;
+      clearInterval(id);
+    };
+  }, [applyPut]);
 
   // --- Core Logic: Retry Worker ---
   useEffect(() => {
@@ -301,48 +335,28 @@ export default function App() {
       </header>
 
       <main className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-6">
+        {/* Left column: Client Console card (instruction only) */}
         <div className="lg:col-span-3 space-y-6">
           <div className="bg-slate-900 rounded-xl border border-slate-800 p-5 shadow-lg">
             <h2 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-4 flex items-center gap-2">
               <Settings size={16} /> Client Console
             </h2>
 
-            <div className="space-y-4">
-              <div>
-                <label className="block text-xs font-medium text-slate-500 mb-1">
-                  Key
-                </label>
-                <input
-                  type="text"
-                  value={inputKey}
-                  onChange={(e) => setInputKey(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-sm font-mono 
-                    focus:ring-2 focus:ring-emerald-500 outline-none transition-all"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-500 mb-1">
-                  Value (JSON/String)
-                </label>
-                <input
-                  type="text"
-                  value={inputValue}
-                  onChange={(e) => setInputValue(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-sm font-mono 
-                    focus:ring-2 focus:ring-emerald-500 outline-none transition-all"
-                />
-              </div>
-              <button
-                onClick={handlePut}
-                className="w-full bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-semibold py-2.5 
-                  rounded transition-all flex items-center justify-center gap-2 active:scale-95"
-              >
-                <Plus size={18} />
-                PUT Item
-              </button>
+            <div>
+              <p className="text-xs text-slate-500">
+                Client Console is now a separate app. Open it in another
+                terminal / port and send PUTs to:
+              </p>
+              <pre className="mt-3 bg-slate-950 p-3 rounded text-xs text-slate-300">
+                POST http://localhost:3000/sim-put {"{ key, value }"}
+              </pre>
+              <p className="text-xs text-slate-400 mt-2">
+                Or run the lightweight client app (port 3001) you created.
+              </p>
             </div>
           </div>
 
+          {/* Network Simulation Card */}
           <div className="bg-slate-900 rounded-xl border border-slate-800 p-5 shadow-lg">
             <h2 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-4 flex items-center gap-2">
               <Server size={16} /> Network Simulation
@@ -360,12 +374,11 @@ export default function App() {
                     `Network: Replica Node marked as ${newStatus}`
                   );
                 }}
-                className={`w-full py-2 px-4 rounded border text-sm font-semibold transition-all 
-                  flex items-center justify-center gap-2 ${
-                    replicaStatus === "ONLINE"
-                      ? "bg-emerald-900/30 border-emerald-800 text-emerald-300 hover:bg-emerald-900/50"
-                      : "bg-rose-900/30 border-rose-800 text-rose-300 hover:bg-rose-900/50"
-                  }`}
+                className={`w-full py-2 px-4 rounded border text-sm font-semibold transition-all flex items-center justify-center gap-2 ${
+                  replicaStatus === "ONLINE"
+                    ? "bg-emerald-900/30 border-emerald-800 text-emerald-300 hover:bg-emerald-900/50"
+                    : "bg-rose-900/30 border-rose-800 text-rose-300 hover:bg-rose-900/50"
+                }`}
               >
                 {replicaStatus === "ONLINE" ? (
                   <Server size={16} />
@@ -382,6 +395,7 @@ export default function App() {
             </div>
           </div>
 
+          {/* Gemini Admin */}
           <div className="bg-slate-900 rounded-xl border border-slate-800 p-5 shadow-lg">
             <h2 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-4 flex items-center gap-2">
               <BrainCircuit size={16} /> Gemini System Admin
@@ -390,9 +404,7 @@ export default function App() {
             <button
               onClick={handleAnalyze}
               disabled={isAnalyzing}
-              className="w-full bg-gradient-to-r from-slate-800 to-purple-300 hover:from-slate-700 
-                hover:to-purple-200 text-slate-950 font-semibold py-2 rounded transition-all flex 
-                items-center justify-center gap-2 disabled:opacity-50"
+              className="w-full bg-gradient-to-r from-slate-800 to-purple-300 hover:from-slate-700 hover:to-purple-200 text-slate-950 font-semibold py-2 rounded transition-all flex items-center justify-center gap-2 disabled:opacity-50"
             >
               {isAnalyzing ? (
                 <span className="animate-pulse">Analyzing Logs...</span>
@@ -402,19 +414,17 @@ export default function App() {
             </button>
 
             {aiAnalysis && (
-              <div
-                className="mt-4 p-3 bg-slate-950 rounded border border-slate-800 text-xs text-slate-300 
-                leading-relaxed animate-in fade-in slide-in-from-top-2"
-              >
+              <div className="mt-4 p-3 bg-slate-950 rounded border border-slate-800 text-xs text-slate-300 leading-relaxed animate-in fade-in slide-in-from-top-2">
                 <span className="font-bold text-purple-300 block mb-1">
                   Gemini Report:
                 </span>
-                coming in future
+                comming in future
               </div>
             )}
           </div>
         </div>
 
+        {/* Primary Column */}
         <div className="lg:col-span-5 flex flex-col gap-6">
           <div className="flex items-center gap-2 text-emerald-300 mb-[-10px]">
             <Server size={20} />
@@ -442,6 +452,7 @@ export default function App() {
           <RetryQueue queue={retryQueue} onForceRetry={handleForceRetry} />
         </div>
 
+        {/* Replica Column */}
         <div className="lg:col-span-4 flex flex-col gap-6">
           <div
             className={`flex items-center gap-2 mb-[-10px] ${
